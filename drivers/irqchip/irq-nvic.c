@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * drivers/irq/irq-nvic.c
  *
  * Copyright (C) 2008 ARM Limited, All Rights Reserved.
  * Copyright (C) 2013 Pengutronix
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * Support for the Nested Vectored Interrupt Controller found on the
  * ARMv7-M CPUs (Cortex-M3/M4)
@@ -54,10 +51,9 @@ static int nvic_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
 	int i, ret;
 	irq_hw_number_t hwirq;
 	unsigned int type = IRQ_TYPE_NONE;
-	struct of_phandle_args *irq_data = arg;
+	struct irq_fwspec *fwspec = arg;
 
-	ret = irq_domain_xlate_onecell(domain, irq_data->np, irq_data->args,
-				   irq_data->args_count, &hwirq, &type);
+	ret = irq_domain_translate_onecell(domain, fwspec, &hwirq, &type);
 	if (ret)
 		return ret;
 
@@ -68,7 +64,7 @@ static int nvic_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
 }
 
 static const struct irq_domain_ops nvic_irq_domain_ops = {
-	.xlate = irq_domain_xlate_onecell,
+	.translate = irq_domain_translate_onecell,
 	.alloc = nvic_irq_domain_alloc,
 	.free = irq_domain_free_irqs_top,
 };

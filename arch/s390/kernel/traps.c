@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  S390 version
  *    Copyright IBM Corp. 1999, 2000
@@ -14,15 +15,16 @@
  */
 #include <linux/kprobes.h>
 #include <linux/kdebug.h>
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/ptrace.h>
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
-#include <asm/fpu-internal.h>
+#include <linux/uaccess.h>
+#include <linux/cpu.h>
+#include <asm/fpu/api.h>
 #include "entry.h"
-
-int show_unhandled_signals = 1;
 
 static inline void __user *get_trap_ip(struct pt_regs *regs)
 {
@@ -32,23 +34,7 @@ static inline void __user *get_trap_ip(struct pt_regs *regs)
 		address = *(unsigned long *)(current->thread.trap_tdb + 24);
 	else
 		address = regs->psw.addr;
-	return (void __user *)
-		((address - (regs->int_code >> 16)) & PSW_ADDR_INSN);
-}
-
-static inline void report_user_fault(struct pt_regs *regs, int signr)
-{
-	if ((task_pid_nr(current) > 1) && !show_unhandled_signals)
-		return;
-	if (!unhandled_signal(current, signr))
-		return;
-	if (!printk_ratelimit())
-		return;
-	printk("User process fault: interruption code %04x ilc:%d ",
-	       regs->int_code & 0xffff, regs->int_code >> 17);
-	print_vma_addr("in ", regs->psw.addr & PSW_ADDR_INSN);
-	printk("\n");
-	show_regs(regs);
+	return (void __user *) (address - (regs->int_code >> 16));
 }
 
 int is_valid_bugaddr(unsigned long addr)
@@ -58,26 +44,15 @@ int is_valid_bugaddr(unsigned long addr)
 
 void do_report_trap(struct pt_regs *regs, int si_signo, int si_code, char *str)
 {
-	siginfo_t info;
-
 	if (user_mode(regs)) {
-		info.si_signo = si_signo;
-		info.si_errno = 0;
-		info.si_code = si_code;
-		info.si_addr = get_trap_ip(regs);
-		force_sig_info(si_signo, &info, current);
-		report_user_fault(regs, si_signo);
+		force_sig_fault(si_signo, si_code, get_trap_ip(regs));
+		report_user_fault(regs, si_signo, 0);
         } else {
                 const struct exception_table_entry *fixup;
-                fixup = search_exception_tables(regs->psw.addr & PSW_ADDR_INSN);
+		fixup = s390_search_extables(regs->psw.addr);
                 if (fixup)
-			regs->psw.addr = extable_fixup(fixup) | PSW_ADDR_AMODE;
+			regs->psw.addr = extable_fixup(fixup);
 		else {
-			enum bug_trap_type btt;
-
-			btt = report_bug(regs->psw.addr & PSW_ADDR_INSN, regs);
-			if (btt == BUG_TRAP_TYPE_WARN)
-				return;
 			die(regs, str);
 		}
         }
@@ -94,25 +69,19 @@ NOKPROBE_SYMBOL(do_trap);
 
 void do_per_trap(struct pt_regs *regs)
 {
-	siginfo_t info;
-
 	if (notify_die(DIE_SSTEP, "sstep", regs, 0, 0, SIGTRAP) == NOTIFY_STOP)
 		return;
 	if (!current->ptrace)
 		return;
-	info.si_signo = SIGTRAP;
-	info.si_errno = 0;
-	info.si_code = TRAP_HWBKPT;
-	info.si_addr =
-		(void __force __user *) current->thread.per_event.address;
-	force_sig_info(SIGTRAP, &info, current);
+	force_sig_fault(SIGTRAP, TRAP_HWBKPT,
+		(void __force __user *) current->thread.per_event.address);
 }
 NOKPROBE_SYMBOL(do_per_trap);
 
 void default_trap_handler(struct pt_regs *regs)
 {
 	if (user_mode(regs)) {
-		report_user_fault(regs, SIGSEGV);
+		report_user_fault(regs, SIGSEGV, 0);
 		do_exit(SIGSEGV);
 	} else
 		die(regs, "Unknown program exception");
@@ -179,7 +148,6 @@ void translation_exception(struct pt_regs *regs)
 
 void illegal_op(struct pt_regs *regs)
 {
-	siginfo_t info;
         __u8 opcode[6];
 	__u16 __user *location;
 	int is_uprobe_insn = 0;
@@ -191,13 +159,9 @@ void illegal_op(struct pt_regs *regs)
 		if (get_user(*((__u16 *) opcode), (__u16 __user *) location))
 			return;
 		if (*((__u16 *) opcode) == S390_BREAKPOINT_U16) {
-			if (current->ptrace) {
-				info.si_signo = SIGTRAP;
-				info.si_errno = 0;
-				info.si_code = TRAP_BRKPT;
-				info.si_addr = location;
-				force_sig_info(SIGTRAP, &info, current);
-			} else
+			if (current->ptrace)
+				force_sig_fault(SIGTRAP, TRAP_BRKPT, location);
+			else
 				signal = SIGILL;
 #ifdef CONFIG_UPROBES
 		} else if (*((__u16 *) opcode) == UPROBE_SWBP_INSN) {
@@ -223,29 +187,6 @@ NOKPROBE_SYMBOL(illegal_op);
 
 DO_ERROR_INFO(specification_exception, SIGILL, ILL_ILLOPN,
 	      "specification exception");
-
-int alloc_vector_registers(struct task_struct *tsk)
-{
-	__vector128 *vxrs;
-	freg_t *fprs;
-
-	/* Allocate vector register save area. */
-	vxrs = kzalloc(sizeof(__vector128) * __NUM_VXRS,
-		       GFP_KERNEL|__GFP_REPEAT);
-	if (!vxrs)
-		return -ENOMEM;
-	preempt_disable();
-	if (tsk == current)
-		save_fpu_regs();
-	/* Copy the 16 floating point registers */
-	convert_fp_to_vx(vxrs, tsk->thread.fpu.fprs);
-	fprs = tsk->thread.fpu.fprs;
-	tsk->thread.fpu.vxrs = vxrs;
-	tsk->thread.fpu.flags |= FPU_USE_VX;
-	kfree(fprs);
-	preempt_enable();
-	return 0;
-}
 
 void vector_exception(struct pt_regs *regs)
 {
@@ -281,38 +222,13 @@ void vector_exception(struct pt_regs *regs)
 	do_trap(regs, SIGFPE, si_code, "vector exception");
 }
 
-static int __init disable_vector_extension(char *str)
-{
-	S390_lowcore.machine_flags &= ~MACHINE_FLAG_VX;
-	return 1;
-}
-__setup("novx", disable_vector_extension);
-
 void data_exception(struct pt_regs *regs)
 {
-	__u16 __user *location;
-	int signal = 0;
-
-	location = get_trap_ip(regs);
-
 	save_fpu_regs();
-	/* Check for vector register enablement */
-	if (MACHINE_HAS_VX && !is_vx_task(current) &&
-	    (current->thread.fpu.fpc & FPC_DXC_MASK) == 0xfe00) {
-		alloc_vector_registers(current);
-		/* Vector data exception is suppressing, rewind psw. */
-		regs->psw.addr = __rewind_psw(regs->psw, regs->int_code >> 16);
-		clear_pt_regs_flag(regs, PIF_PER_TRAP);
-		return;
-	}
 	if (current->thread.fpu.fpc & FPC_DXC_MASK)
-		signal = SIGFPE;
-	else
-		signal = SIGILL;
-	if (signal == SIGFPE)
 		do_fp_trap(regs, current->thread.fpu.fpc);
-	else if (signal)
-		do_trap(regs, signal, ILL_ILLOPN, "data exception");
+	else
+		do_trap(regs, SIGILL, ILL_ILLOPN, "data exception");
 }
 
 void space_switch_exception(struct pt_regs *regs)
@@ -322,6 +238,27 @@ void space_switch_exception(struct pt_regs *regs)
 		regs->psw.mask |= PSW_ASC_HOME;
 	/* Send SIGILL. */
 	do_trap(regs, SIGILL, ILL_PRVOPC, "space switch event");
+}
+
+void monitor_event_exception(struct pt_regs *regs)
+{
+	const struct exception_table_entry *fixup;
+
+	if (user_mode(regs))
+		return;
+
+	switch (report_bug(regs->psw.addr - (regs->int_code >> 16), regs)) {
+	case BUG_TRAP_TYPE_NONE:
+		fixup = s390_search_extables(regs->psw.addr);
+		if (fixup)
+			regs->psw.addr = extable_fixup(fixup);
+		break;
+	case BUG_TRAP_TYPE_WARN:
+		break;
+	case BUG_TRAP_TYPE_BUG:
+		die(regs, "monitor event");
+		break;
+	}
 }
 
 void kernel_stack_overflow(struct pt_regs *regs)
@@ -334,7 +271,23 @@ void kernel_stack_overflow(struct pt_regs *regs)
 }
 NOKPROBE_SYMBOL(kernel_stack_overflow);
 
+static void __init test_monitor_call(void)
+{
+	int val = 1;
+
+	asm volatile(
+		"	mc	0,0\n"
+		"0:	xgr	%0,%0\n"
+		"1:\n"
+		EX_TABLE(0b,1b)
+		: "+d" (val));
+	if (!val)
+		panic("Monitor call doesn't work!\n");
+}
+
 void __init trap_init(void)
 {
+	sort_extable(__start_dma_ex_table, __stop_dma_ex_table);
 	local_mcck_enable();
+	test_monitor_call();
 }

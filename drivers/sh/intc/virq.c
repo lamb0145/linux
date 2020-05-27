@@ -94,10 +94,8 @@ static int add_virq_to_pirq(unsigned int irq, unsigned int virq)
 	}
 
 	entry = kzalloc(sizeof(struct intc_virq_list), GFP_ATOMIC);
-	if (!entry) {
-		pr_err("can't allocate VIRQ mapping for %d\n", virq);
+	if (!entry)
 		return -ENOMEM;
-	}
 
 	entry->irq = virq;
 
@@ -109,7 +107,7 @@ static int add_virq_to_pirq(unsigned int irq, unsigned int virq)
 	return 0;
 }
 
-static void intc_virq_handler(unsigned int __irq, struct irq_desc *desc)
+static void intc_virq_handler(struct irq_desc *desc)
 {
 	unsigned int irq = irq_desc_get_irq(desc);
 	struct irq_data *data = irq_desc_get_irq_data(desc);
@@ -127,7 +125,7 @@ static void intc_virq_handler(unsigned int __irq, struct irq_desc *desc)
 			handle = (unsigned long)irq_desc_get_handler_data(vdesc);
 			addr = INTC_REG(d, _INTC_ADDR_E(handle), 0);
 			if (intc_reg_fns[_INTC_FN(handle)](addr, handle, 0))
-				generic_handle_irq_desc(entry->irq, vdesc);
+				generic_handle_irq_desc(vdesc);
 		}
 	}
 
@@ -254,7 +252,7 @@ restart:
 
 		radix_tree_tag_clear(&d->tree, entry->enum_id,
 				     INTC_TAG_VIRQ_NEEDS_ALLOC);
-		radix_tree_replace_slot((void **)entries[i],
+		radix_tree_replace_slot(&d->tree, (void **)entries[i],
 					&intc_irq_xlate[irq]);
 	}
 

@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007-2014 Nicira, Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of version 2 of the GNU General Public
- * License as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA
  */
 
 #include <linux/etherdevice.h>
@@ -47,7 +34,7 @@ static struct hlist_head *dev_table;
  */
 int ovs_vport_init(void)
 {
-	dev_table = kzalloc(VPORT_HASH_BUCKETS * sizeof(struct hlist_head),
+	dev_table = kcalloc(VPORT_HASH_BUCKETS, sizeof(struct hlist_head),
 			    GFP_KERNEL);
 	if (!dev_table)
 		return -ENOMEM;
@@ -71,7 +58,7 @@ static struct hlist_head *hash_bucket(const struct net *net, const char *name)
 	return &dev_table[hash & (VPORT_HASH_BUCKETS - 1)];
 }
 
-int ovs_vport_ops_register(struct vport_ops *ops)
+int __ovs_vport_ops_register(struct vport_ops *ops)
 {
 	int err = -EEXIST;
 	struct vport_ops *o;
@@ -87,7 +74,7 @@ errout:
 	ovs_unlock();
 	return err;
 }
-EXPORT_SYMBOL_GPL(ovs_vport_ops_register);
+EXPORT_SYMBOL_GPL(__ovs_vport_ops_register);
 
 void ovs_vport_ops_unregister(struct vport_ops *ops)
 {
@@ -109,7 +96,8 @@ struct vport *ovs_vport_locate(const struct net *net, const char *name)
 	struct hlist_head *bucket = hash_bucket(net, name);
 	struct vport *vport;
 
-	hlist_for_each_entry_rcu(vport, bucket, hash_node)
+	hlist_for_each_entry_rcu(vport, bucket, hash_node,
+				lockdep_ovsl_is_held())
 		if (!strcmp(name, ovs_vport_name(vport)) &&
 		    net_eq(ovs_dp_get_net(vport->dp), net))
 			return vport;
@@ -256,13 +244,11 @@ int ovs_vport_set_options(struct vport *vport, struct nlattr *options)
  *
  * @vport: vport to delete.
  *
- * Detaches @vport from its datapath and destroys it.  It is possible to fail
- * for reasons such as lack of memory.  ovs_mutex must be held.
+ * Detaches @vport from its datapath and destroys it.  ovs_mutex must
+ * be held.
  */
 void ovs_vport_del(struct vport *vport)
 {
-	ASSERT_OVSL();
-
 	hlist_del_rcu(&vport->hash_node);
 	module_put(vport->ops->owner);
 	vport->ops->destroy(vport);
@@ -280,35 +266,19 @@ void ovs_vport_del(struct vport *vport)
  */
 void ovs_vport_get_stats(struct vport *vport, struct ovs_vport_stats *stats)
 {
-	struct net_device *dev = vport->dev;
-	int i;
+	const struct rtnl_link_stats64 *dev_stats;
+	struct rtnl_link_stats64 temp;
 
-	memset(stats, 0, sizeof(*stats));
-	stats->rx_errors  = dev->stats.rx_errors;
-	stats->tx_errors  = dev->stats.tx_errors;
-	stats->tx_dropped = dev->stats.tx_dropped;
-	stats->rx_dropped = dev->stats.rx_dropped;
+	dev_stats = dev_get_stats(vport->dev, &temp);
+	stats->rx_errors  = dev_stats->rx_errors;
+	stats->tx_errors  = dev_stats->tx_errors;
+	stats->tx_dropped = dev_stats->tx_dropped;
+	stats->rx_dropped = dev_stats->rx_dropped;
 
-	stats->rx_dropped += atomic_long_read(&dev->rx_dropped);
-	stats->tx_dropped += atomic_long_read(&dev->tx_dropped);
-
-	for_each_possible_cpu(i) {
-		const struct pcpu_sw_netstats *percpu_stats;
-		struct pcpu_sw_netstats local_stats;
-		unsigned int start;
-
-		percpu_stats = per_cpu_ptr(dev->tstats, i);
-
-		do {
-			start = u64_stats_fetch_begin_irq(&percpu_stats->syncp);
-			local_stats = *percpu_stats;
-		} while (u64_stats_fetch_retry_irq(&percpu_stats->syncp, start));
-
-		stats->rx_bytes		+= local_stats.rx_bytes;
-		stats->rx_packets	+= local_stats.rx_packets;
-		stats->tx_bytes		+= local_stats.tx_bytes;
-		stats->tx_packets	+= local_stats.tx_packets;
-	}
+	stats->rx_bytes	  = dev_stats->rx_bytes;
+	stats->rx_packets = dev_stats->rx_packets;
+	stats->tx_bytes	  = dev_stats->tx_bytes;
+	stats->tx_packets = dev_stats->tx_packets;
 }
 
 /**
@@ -335,7 +305,7 @@ int ovs_vport_get_options(const struct vport *vport, struct sk_buff *skb)
 	if (!vport->ops->get_options)
 		return 0;
 
-	nla = nla_nest_start(skb, OVS_VPORT_ATTR_OPTIONS);
+	nla = nla_nest_start_noflag(skb, OVS_VPORT_ATTR_OPTIONS);
 	if (!nla)
 		return -EMSGSIZE;
 
@@ -434,8 +404,9 @@ u32 ovs_vport_find_upcall_portid(const struct vport *vport, struct sk_buff *skb)
 
 	ids = rcu_dereference(vport->upcall_portids);
 
-	if (ids->n_ids == 1 && ids->ids[0] == 0)
-		return 0;
+	/* If there is only one portid, select it in the fast-path. */
+	if (ids->n_ids == 1)
+		return ids->ids[0];
 
 	hash = skb_get_hash(skb);
 	ids_index = hash - ids->n_ids * reciprocal_divide(hash, ids->rn_ids);
@@ -460,6 +431,16 @@ int ovs_vport_receive(struct vport *vport, struct sk_buff *skb,
 
 	OVS_CB(skb)->input_vport = vport;
 	OVS_CB(skb)->mru = 0;
+	OVS_CB(skb)->cutlen = 0;
+	if (unlikely(dev_net(skb->dev) != ovs_dp_get_net(vport->dp))) {
+		u32 mark;
+
+		mark = skb->mark;
+		skb_scrub_packet(skb, true);
+		skb->mark = mark;
+		tun_info = NULL;
+	}
+
 	/* Extract flow from 'skb' into 'key'. */
 	error = ovs_flow_key_extract(tun_info, skb, &key);
 	if (unlikely(error)) {
@@ -469,78 +450,60 @@ int ovs_vport_receive(struct vport *vport, struct sk_buff *skb,
 	ovs_dp_process_packet(skb, &key);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(ovs_vport_receive);
 
-static void free_vport_rcu(struct rcu_head *rcu)
+static int packet_length(const struct sk_buff *skb,
+			 struct net_device *dev)
 {
-	struct vport *vport = container_of(rcu, struct vport, rcu);
+	int length = skb->len - dev->hard_header_len;
 
-	ovs_vport_free(vport);
-}
+	if (!skb_vlan_tag_present(skb) &&
+	    eth_type_vlan(skb->protocol))
+		length -= VLAN_HLEN;
 
-void ovs_vport_deferred_free(struct vport *vport)
-{
-	if (!vport)
-		return;
-
-	call_rcu(&vport->rcu, free_vport_rcu);
-}
-EXPORT_SYMBOL_GPL(ovs_vport_deferred_free);
-
-int ovs_tunnel_get_egress_info(struct dp_upcall_info *upcall,
-			       struct net *net,
-			       struct sk_buff *skb,
-			       u8 ipproto,
-			       __be16 tp_src,
-			       __be16 tp_dst)
-{
-	struct ip_tunnel_info *egress_tun_info = upcall->egress_tun_info;
-	const struct ip_tunnel_info *tun_info = skb_tunnel_info(skb);
-	const struct ip_tunnel_key *tun_key;
-	u32 skb_mark = skb->mark;
-	struct rtable *rt;
-	struct flowi4 fl;
-
-	if (unlikely(!tun_info))
-		return -EINVAL;
-	if (ip_tunnel_info_af(tun_info) != AF_INET)
-		return -EINVAL;
-
-	tun_key = &tun_info->key;
-
-	/* Route lookup to get srouce IP address.
-	 * The process may need to be changed if the corresponding process
-	 * in vports ops changed.
+	/* Don't subtract for multiple VLAN tags. Most (all?) drivers allow
+	 * (ETH_LEN + VLAN_HLEN) in addition to the mtu value, but almost none
+	 * account for 802.1ad. e.g. is_skb_forwardable().
 	 */
-	rt = ovs_tunnel_route_lookup(net, tun_key, skb_mark, &fl, ipproto);
-	if (IS_ERR(rt))
-		return PTR_ERR(rt);
 
-	ip_rt_put(rt);
-
-	/* Generate egress_tun_info based on tun_info,
-	 * saddr, tp_src and tp_dst
-	 */
-	ip_tunnel_key_init(&egress_tun_info->key,
-			   fl.saddr, tun_key->u.ipv4.dst,
-			   tun_key->tos,
-			   tun_key->ttl,
-			   tp_src, tp_dst,
-			   tun_key->tun_id,
-			   tun_key->tun_flags);
-	egress_tun_info->options_len = tun_info->options_len;
-	egress_tun_info->mode = tun_info->mode;
-	upcall->egress_tun_opts = ip_tunnel_info_opts(egress_tun_info);
-	return 0;
+	return length > 0 ? length : 0;
 }
-EXPORT_SYMBOL_GPL(ovs_tunnel_get_egress_info);
 
-int ovs_vport_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
-				  struct dp_upcall_info *upcall)
+void ovs_vport_send(struct vport *vport, struct sk_buff *skb, u8 mac_proto)
 {
-	/* get_egress_tun_info() is only implemented on tunnel ports. */
-	if (unlikely(!vport->ops->get_egress_tun_info))
-		return -EINVAL;
+	int mtu = vport->dev->mtu;
 
-	return vport->ops->get_egress_tun_info(vport, skb, upcall);
+	switch (vport->dev->type) {
+	case ARPHRD_NONE:
+		if (mac_proto == MAC_PROTO_ETHERNET) {
+			skb_reset_network_header(skb);
+			skb_reset_mac_len(skb);
+			skb->protocol = htons(ETH_P_TEB);
+		} else if (mac_proto != MAC_PROTO_NONE) {
+			WARN_ON_ONCE(1);
+			goto drop;
+		}
+		break;
+	case ARPHRD_ETHER:
+		if (mac_proto != MAC_PROTO_ETHERNET)
+			goto drop;
+		break;
+	default:
+		goto drop;
+	}
+
+	if (unlikely(packet_length(skb, vport->dev) > mtu &&
+		     !skb_is_gso(skb))) {
+		net_warn_ratelimited("%s: dropped over-mtu packet: %d > %d\n",
+				     vport->dev->name,
+				     packet_length(skb, vport->dev), mtu);
+		vport->dev->stats.tx_errors++;
+		goto drop;
+	}
+
+	skb->dev = vport->dev;
+	vport->ops->send(skb);
+	return;
+
+drop:
+	kfree_skb(skb);
 }

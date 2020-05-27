@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/common/it8152.c
  *
@@ -9,10 +10,6 @@
  *
  * Thanks to Guennadi Liakhovetski <gl@dsa-ac.de> for IRQ enumberation
  * and demux code.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/sched.h>
@@ -95,7 +92,7 @@ void it8152_init_irq(void)
 	}
 }
 
-void it8152_irq_demux(unsigned int irq, struct irq_desc *desc)
+void it8152_irq_demux(struct irq_desc *desc)
 {
        int bits_pd, bits_lp, bits_ld;
        int i;

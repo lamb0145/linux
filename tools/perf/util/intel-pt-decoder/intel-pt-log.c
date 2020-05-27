@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * intel_pt_log.c: Intel Processor Trace support
  * Copyright (c) 2013-2014, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
  */
 
 #include <stdio.h>
@@ -29,18 +20,23 @@
 
 static FILE *f;
 static char log_name[MAX_LOG_NAME];
-static bool enable_logging;
+bool intel_pt_enable_logging;
+
+void *intel_pt_log_fp(void)
+{
+	return f;
+}
 
 void intel_pt_log_enable(void)
 {
-	enable_logging = true;
+	intel_pt_enable_logging = true;
 }
 
 void intel_pt_log_disable(void)
 {
 	if (f)
 		fflush(f);
-	enable_logging = false;
+	intel_pt_enable_logging = false;
 }
 
 void intel_pt_log_set_name(const char *name)
@@ -80,7 +76,7 @@ static void intel_pt_print_no_data(uint64_t pos, int indent)
 
 static int intel_pt_log_open(void)
 {
-	if (!enable_logging)
+	if (!intel_pt_enable_logging)
 		return -1;
 
 	if (f)
@@ -91,15 +87,15 @@ static int intel_pt_log_open(void)
 
 	f = fopen(log_name, "w+");
 	if (!f) {
-		enable_logging = false;
+		intel_pt_enable_logging = false;
 		return -1;
 	}
 
 	return 0;
 }
 
-void intel_pt_log_packet(const struct intel_pt_pkt *packet, int pkt_len,
-			 uint64_t pos, const unsigned char *buf)
+void __intel_pt_log_packet(const struct intel_pt_pkt *packet, int pkt_len,
+			   uint64_t pos, const unsigned char *buf)
 {
 	char desc[INTEL_PT_PKT_DESC_MAX];
 
@@ -111,7 +107,7 @@ void intel_pt_log_packet(const struct intel_pt_pkt *packet, int pkt_len,
 	fprintf(f, "%s\n", desc);
 }
 
-void intel_pt_log_insn(struct intel_pt_insn *intel_pt_insn, uint64_t ip)
+void __intel_pt_log_insn(struct intel_pt_insn *intel_pt_insn, uint64_t ip)
 {
 	char desc[INTEL_PT_INSN_DESC_MAX];
 	size_t len = intel_pt_insn->length;
@@ -119,8 +115,8 @@ void intel_pt_log_insn(struct intel_pt_insn *intel_pt_insn, uint64_t ip)
 	if (intel_pt_log_open())
 		return;
 
-	if (len > INTEL_PT_INSN_DBG_BUF_SZ)
-		len = INTEL_PT_INSN_DBG_BUF_SZ;
+	if (len > INTEL_PT_INSN_BUF_SZ)
+		len = INTEL_PT_INSN_BUF_SZ;
 	intel_pt_print_data(intel_pt_insn->buf, len, ip, 8);
 	if (intel_pt_insn_desc(intel_pt_insn, desc, INTEL_PT_INSN_DESC_MAX) > 0)
 		fprintf(f, "%s\n", desc);
@@ -128,7 +124,8 @@ void intel_pt_log_insn(struct intel_pt_insn *intel_pt_insn, uint64_t ip)
 		fprintf(f, "Bad instruction!\n");
 }
 
-void intel_pt_log_insn_no_data(struct intel_pt_insn *intel_pt_insn, uint64_t ip)
+void __intel_pt_log_insn_no_data(struct intel_pt_insn *intel_pt_insn,
+				 uint64_t ip)
 {
 	char desc[INTEL_PT_INSN_DESC_MAX];
 
@@ -142,7 +139,7 @@ void intel_pt_log_insn_no_data(struct intel_pt_insn *intel_pt_insn, uint64_t ip)
 		fprintf(f, "Bad instruction!\n");
 }
 
-void intel_pt_log(const char *fmt, ...)
+void __intel_pt_log(const char *fmt, ...)
 {
 	va_list args;
 

@@ -1,22 +1,9 @@
-/******************************************************************************
+// SPDX-License-Identifier: GPL-2.0
+/*
  * Copyright(c) 2008 - 2010 Realtek Corporation. All rights reserved.
  *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
- *
- * The full GNU General Public License is included in this distribution in the
- * file called LICENSE.
- *
- * Contact Information:
- * wlanfae <wlanfae@realtek.com>
-******************************************************************************/
-
+ * Contact Information: wlanfae <wlanfae@realtek.com>
+ */
 #include "rtl_core.h"
 #include "r8192E_hw.h"
 #include "r8190P_rtl8256.h"
@@ -31,7 +18,7 @@ int rtl92e_suspend(struct pci_dev *pdev, pm_message_t state)
 
 	netdev_info(dev, "============> r8192E suspend call.\n");
 	del_timer_sync(&priv->gpio_polling_timer);
-	cancel_delayed_work(&priv->gpio_change_rf_wq);
+	cancel_delayed_work_sync(&priv->gpio_change_rf_wq);
 	priv->polling_timer_on = 0;
 
 	if (!netif_running(dev)) {
@@ -95,7 +82,7 @@ int rtl92e_resume(struct pci_dev *pdev)
 	pci_enable_wake(pdev, PCI_D0, 0);
 
 	if (priv->polling_timer_on == 0)
-		rtl92e_check_rfctrl_gpio_timer((unsigned long)dev);
+		rtl92e_check_rfctrl_gpio_timer(&priv->gpio_polling_timer);
 
 	if (!netif_running(dev)) {
 		netdev_info(dev,

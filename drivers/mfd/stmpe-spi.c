@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ST Microelectronics MFD: stmpe's spi client specific driver
  *
  * Copyright (C) ST Microelectronics SA 2011
  *
- * License Terms: GNU General Public License, version 2
  * Author: Viresh Kumar <vireshk@kernel.org> for ST Microelectronics
  */
 
@@ -135,7 +135,6 @@ static struct spi_driver stmpe_spi_driver = {
 	.driver = {
 		.name	= "stmpe-spi",
 		.of_match_table = of_match_ptr(stmpe_spi_of_match),
-		.owner	= THIS_MODULE,
 #ifdef CONFIG_PM
 		.pm	= &stmpe_dev_pm_ops,
 #endif

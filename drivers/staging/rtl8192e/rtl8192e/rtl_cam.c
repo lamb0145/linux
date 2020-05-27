@@ -1,27 +1,12 @@
-/******************************************************************************
+// SPDX-License-Identifier: GPL-2.0
+/*
  * Copyright(c) 2008 - 2010 Realtek Corporation. All rights reserved.
  *
  * Based on the r8180 driver, which is:
  * Copyright 2004-2005 Andrea Merello <andrea.merello@gmail.com>, et al.
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
  *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
- *
- * The full GNU General Public License is included in this distribution in the
- * file called LICENSE.
- *
- * Contact Information:
- * wlanfae <wlanfae@realtek.com>
-******************************************************************************/
+ * Contact Information: wlanfae <wlanfae@realtek.com>
+ */
 #include "rtl_core.h"
 #include "r8192E_phy.h"
 #include "r8192E_phyreg.h"
@@ -43,8 +28,8 @@ void rtl92e_enable_hw_security_config(struct net_device *dev)
 	struct rtllib_device *ieee = priv->rtllib;
 
 	SECR_value = SCR_TxEncEnable | SCR_RxDecEnable;
-	if (((KEY_TYPE_WEP40 == ieee->pairwise_key_type) ||
-	     (KEY_TYPE_WEP104 == ieee->pairwise_key_type)) &&
+	if (((ieee->pairwise_key_type == KEY_TYPE_WEP40) ||
+	     (ieee->pairwise_key_type == KEY_TYPE_WEP104)) &&
 	     (priv->rtllib->auth_mode != 2)) {
 		SECR_value |= SCR_RxUseDK;
 		SECR_value |= SCR_TxUseDK;
@@ -111,9 +96,9 @@ void rtl92e_set_key(struct net_device *dev, u8 EntryNo, u8 KeyIndex,
 					    __func__);
 				return;
 			}
-			down(&priv->rtllib->ips_sem);
+			mutex_lock(&priv->rtllib->ips_mutex);
 			rtl92e_ips_leave(dev);
-			up(&priv->rtllib->ips_sem);
+			mutex_unlock(&priv->rtllib->ips_mutex);
 		}
 	}
 	priv->rtllib->is_set_key = true;
@@ -123,8 +108,8 @@ void rtl92e_set_key(struct net_device *dev, u8 EntryNo, u8 KeyIndex,
 	}
 
 	RT_TRACE(COMP_SEC,
-		 "====>to rtl92e_set_key(), dev:%p, EntryNo:%d, KeyIndex:%d,KeyType:%d, MacAddr %pM\n",
-		 dev, EntryNo, KeyIndex, KeyType, MacAddr);
+		 "====>to %s, dev:%p, EntryNo:%d, KeyIndex:%d,KeyType:%d, MacAddr %pM\n",
+		 __func__, dev, EntryNo, KeyIndex, KeyType, MacAddr);
 
 	if (DefaultKey)
 		usConfig |= BIT15 | (KeyType<<2);
@@ -178,7 +163,7 @@ void rtl92e_cam_restore(struct net_device *dev)
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff
 	};
 
-	RT_TRACE(COMP_SEC, "rtl92e_cam_restore:\n");
+	RT_TRACE(COMP_SEC, "%s:\n", __func__);
 
 
 	if ((priv->rtllib->pairwise_key_type == KEY_TYPE_WEP40) ||

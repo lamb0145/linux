@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  tw68-core.c
  *  Core functions for the Techwell 68xx driver
@@ -14,16 +15,6 @@
  *  Refactored and updated to the latest v4l core frameworks:
  *
  *  Copyright (C) 2014 Hans Verkuil <hverkuil@xs4all.nl>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
  */
 
 #include <linux/init.h>
@@ -257,9 +248,9 @@ static int tw68_initdev(struct pci_dev *pci_dev,
 		dev->name, pci_name(pci_dev), dev->pci_rev, pci_dev->irq,
 		dev->pci_lat, (u64)pci_resource_start(pci_dev, 0));
 	pci_set_master(pci_dev);
-	if (!pci_dma_supported(pci_dev, DMA_BIT_MASK(32))) {
+	err = pci_set_dma_mask(pci_dev, DMA_BIT_MASK(32));
+	if (err) {
 		pr_info("%s: Oops: no 32bit PCI DMA ???\n", dev->name);
-		err = -EIO;
 		goto fail1;
 	}
 
@@ -305,19 +296,13 @@ static int tw68_initdev(struct pci_dev *pci_dev,
 	/* Then do any initialisation wanted before interrupts are on */
 	tw68_hw_init1(dev);
 
-	dev->alloc_ctx = vb2_dma_sg_init_ctx(&pci_dev->dev);
-	if (IS_ERR(dev->alloc_ctx)) {
-		err = PTR_ERR(dev->alloc_ctx);
-		goto fail3;
-	}
-
 	/* get irq */
 	err = devm_request_irq(&pci_dev->dev, pci_dev->irq, tw68_irq,
 			  IRQF_SHARED, dev->name, dev);
 	if (err < 0) {
 		pr_err("%s: can't get IRQ %d\n",
 		       dev->name, pci_dev->irq);
-		goto fail4;
+		goto fail3;
 	}
 
 	/*
@@ -331,7 +316,7 @@ static int tw68_initdev(struct pci_dev *pci_dev,
 	if (err < 0) {
 		pr_err("%s: can't register video device\n",
 		       dev->name);
-		goto fail5;
+		goto fail4;
 	}
 	tw_setl(TW68_INTMASK, dev->pci_irqmask);
 
@@ -340,10 +325,8 @@ static int tw68_initdev(struct pci_dev *pci_dev,
 
 	return 0;
 
-fail5:
-	video_unregister_device(&dev->vdev);
 fail4:
-	vb2_dma_sg_cleanup_ctx(dev->alloc_ctx);
+	video_unregister_device(&dev->vdev);
 fail3:
 	iounmap(dev->lmmio);
 fail2:
@@ -367,7 +350,6 @@ static void tw68_finidev(struct pci_dev *pci_dev)
 	/* unregister */
 	video_unregister_device(&dev->vdev);
 	v4l2_ctrl_handler_free(&dev->hdl);
-	vb2_dma_sg_cleanup_ctx(dev->alloc_ctx);
 
 	/* release resources */
 	iounmap(dev->lmmio);

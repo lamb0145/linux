@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-pxa/lpd270.c
  *
@@ -7,10 +8,6 @@
  * Author:	Nicolas Pitre
  * Created:	Nov 05, 2002
  * Copyright:	MontaVista Software Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/gpio.h>
 #include <linux/init.h>
@@ -23,6 +20,7 @@
 #include <linux/ioport.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/pwm.h>
 #include <linux/pwm_backlight.h>
 #include <linux/smc91x.h>
 
@@ -32,15 +30,15 @@
 #include <asm/mach-types.h>
 #include <mach/hardware.h>
 #include <asm/irq.h>
-#include <asm/sizes.h>
+#include <linux/sizes.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/flash.h>
 
-#include <mach/pxa27x.h>
-#include <mach/lpd270.h>
+#include "pxa27x.h"
+#include "lpd270.h"
 #include <mach/audio.h>
 #include <linux/platform_data/video-pxafb.h>
 #include <linux/platform_data/mmc-pxamci.h>
@@ -120,7 +118,7 @@ static struct irq_chip lpd270_irq_chip = {
 	.irq_unmask	= lpd270_unmask_irq,
 };
 
-static void lpd270_irq_handler(unsigned int __irq, struct irq_desc *desc)
+static void lpd270_irq_handler(struct irq_desc *desc)
 {
 	unsigned int irq;
 	unsigned long pending;
@@ -271,12 +269,14 @@ static struct platform_device lpd270_flash_device[2] = {
 	},
 };
 
+static struct pwm_lookup lpd270_pwm_lookup[] = {
+	PWM_LOOKUP("pxa27x-pwm.0", 0, "pwm-backlight.0", NULL, 78770,
+		   PWM_POLARITY_NORMAL),
+};
+
 static struct platform_pwm_backlight_data lpd270_backlight_data = {
-	.pwm_id		= 0,
 	.max_brightness	= 1,
 	.dft_brightness	= 1,
-	.pwm_period_ns	= 78770,
-	.enable_gpio	= -1,
 };
 
 static struct platform_device lpd270_backlight_device = {
@@ -474,6 +474,7 @@ static void __init lpd270_init(void)
 	 */
 	ARB_CNTRL = ARB_CORE_PARK | 0x234;
 
+	pwm_add_table(lpd270_pwm_lookup, ARRAY_SIZE(lpd270_pwm_lookup));
 	platform_add_devices(platform_devices, ARRAY_SIZE(platform_devices));
 
 	pxa_set_ac97_info(NULL);

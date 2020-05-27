@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ACPI support for PNP bus type
  *
  * Copyright (C) 2014, Intel Corporation
  * Authors: Zhang Rui <rui.zhang@intel.com>
  *          Rafael J. Wysocki <rafael.j.wysocki@intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/acpi.h>
@@ -316,7 +313,7 @@ static const struct acpi_device_id acpi_pnp_device_ids[] = {
 	{""},
 };
 
-static bool matching_id(char *idstr, char *list_id)
+static bool matching_id(const char *idstr, const char *list_id)
 {
 	int i;
 
@@ -333,7 +330,7 @@ static bool matching_id(char *idstr, char *list_id)
 	return true;
 }
 
-static bool acpi_pnp_match(char *idstr, const struct acpi_device_id **matchid)
+static bool acpi_pnp_match(const char *idstr, const struct acpi_device_id **matchid)
 {
 	const struct acpi_device_id *devid;
 
@@ -367,7 +364,7 @@ static struct acpi_scan_handler acpi_pnp_handler = {
  */
 static int is_cmos_rtc_device(struct acpi_device *adev)
 {
-	struct acpi_device_id ids[] = {
+	static const struct acpi_device_id ids[] = {
 		{ "PNP0B00" },
 		{ "PNP0B01" },
 		{ "PNP0B02" },

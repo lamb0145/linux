@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Xen leaves the responsibility for maintaining p2m mappings to the
  * guests themselves, but it must also access and update the p2m array
@@ -60,18 +62,18 @@
  */
 
 #include <linux/init.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/list.h>
 #include <linux/hash.h>
 #include <linux/sched.h>
 #include <linux/seq_file.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 
 #include <asm/cache.h>
 #include <asm/setup.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include <asm/xen/page.h>
 #include <asm/xen/hypercall.h>
@@ -111,6 +113,15 @@ static unsigned long *p2m_missing;
 static unsigned long *p2m_identity;
 static pte_t *p2m_missing_pte;
 static pte_t *p2m_identity_pte;
+
+/*
+ * Hint at last populated PFN.
+ *
+ * Used to set HYPERVISOR_shared_info->arch.max_pfn so the toolstack
+ * can avoid scanning the whole P2M (which may be sized to account for
+ * hotplugged memory).
+ */
+static unsigned long xen_p2m_last_pfn;
 
 static inline unsigned p2m_top_index(unsigned long pfn)
 {
@@ -170,16 +181,23 @@ static void p2m_init_identity(unsigned long *p2m, unsigned long pfn)
 
 static void * __ref alloc_p2m_page(void)
 {
-	if (unlikely(!slab_is_available()))
-		return alloc_bootmem_align(PAGE_SIZE, PAGE_SIZE);
+	if (unlikely(!slab_is_available())) {
+		void *ptr = memblock_alloc(PAGE_SIZE, PAGE_SIZE);
 
-	return (void *)__get_free_page(GFP_KERNEL | __GFP_REPEAT);
+		if (!ptr)
+			panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
+			      __func__, PAGE_SIZE, PAGE_SIZE);
+
+		return ptr;
+	}
+
+	return (void *)__get_free_page(GFP_KERNEL);
 }
 
 static void __ref free_p2m_page(void *p)
 {
 	if (unlikely(!slab_is_available())) {
-		free_bootmem((unsigned long)p, PAGE_SIZE);
+		memblock_free((unsigned long)p, PAGE_SIZE);
 		return;
 	}
 
@@ -203,8 +221,7 @@ void __ref xen_build_mfn_list_list(void)
 	unsigned int level, topidx, mididx;
 	unsigned long *mid_mfn_p;
 
-	if (xen_feature(XENFEAT_auto_translated_physmap) ||
-	    xen_start_info->flags & SIF_VIRT_P2M_4TOOLS)
+	if (xen_start_info->flags & SIF_VIRT_P2M_4TOOLS)
 		return;
 
 	/* Pre-initialize p2m_top_mfn to be completely missing */
@@ -260,9 +277,6 @@ void __ref xen_build_mfn_list_list(void)
 
 void xen_setup_mfn_list_list(void)
 {
-	if (xen_feature(XENFEAT_auto_translated_physmap))
-		return;
-
 	BUG_ON(HYPERVISOR_shared_info == &xen_dummy_shared_info);
 
 	if (xen_start_info->flags & SIF_VIRT_P2M_4TOOLS)
@@ -270,7 +284,7 @@ void xen_setup_mfn_list_list(void)
 	else
 		HYPERVISOR_shared_info->arch.pfn_to_mfn_frame_list_list =
 			virt_to_mfn(p2m_top_mfn);
-	HYPERVISOR_shared_info->arch.max_pfn = xen_max_p2m_pfn;
+	HYPERVISOR_shared_info->arch.max_pfn = xen_p2m_last_pfn;
 	HYPERVISOR_shared_info->arch.p2m_generation = 0;
 	HYPERVISOR_shared_info->arch.p2m_vaddr = (unsigned long)xen_p2m_addr;
 	HYPERVISOR_shared_info->arch.p2m_cr3 =
@@ -281,9 +295,6 @@ void xen_setup_mfn_list_list(void)
 void __init xen_build_dynamic_phys_to_machine(void)
 {
 	unsigned long pfn;
-
-	 if (xen_feature(XENFEAT_auto_translated_physmap))
-		return;
 
 	xen_p2m_addr = (unsigned long *)xen_start_info->mfn_list;
 	xen_p2m_size = ALIGN(xen_start_info->nr_pages, P2M_PER_PAGE);
@@ -406,6 +417,8 @@ void __init xen_vmalloc_p2m_tree(void)
 	static struct vm_struct vm;
 	unsigned long p2m_limit;
 
+	xen_p2m_last_pfn = xen_max_p2m_pfn;
+
 	p2m_limit = (phys_addr_t)P2M_LIMIT * 1024 * 1024 * 1024 / PAGE_SIZE;
 	vm.flags = VM_ALLOC;
 	vm.size = ALIGN(sizeof(unsigned long) * max(xen_max_p2m_pfn, p2m_limit),
@@ -519,7 +532,7 @@ static pte_t *alloc_p2m_pmd(unsigned long addr, pte_t *pte_pg)
  * the new pages are installed with cmpxchg; if we lose the race then
  * simply free the page we allocated and use the one that's there.
  */
-static bool alloc_p2m(unsigned long pfn)
+int xen_alloc_p2m_entry(unsigned long pfn)
 {
 	unsigned topidx;
 	unsigned long *top_mfn_p, *mid_mfn;
@@ -537,13 +550,13 @@ static bool alloc_p2m(unsigned long pfn)
 		/* PMD level is missing, allocate a new one */
 		ptep = alloc_p2m_pmd(addr, pte_pg);
 		if (!ptep)
-			return false;
+			return -ENOMEM;
 	}
 
 	if (p2m_top_mfn && pfn < MAX_P2M_PFN) {
 		topidx = p2m_top_index(pfn);
 		top_mfn_p = &p2m_top_mfn[topidx];
-		mid_mfn = ACCESS_ONCE(p2m_top_mfn_p[topidx]);
+		mid_mfn = READ_ONCE(p2m_top_mfn_p[topidx]);
 
 		BUG_ON(virt_to_mfn(mid_mfn) != *top_mfn_p);
 
@@ -555,7 +568,7 @@ static bool alloc_p2m(unsigned long pfn)
 
 			mid_mfn = alloc_p2m_page();
 			if (!mid_mfn)
-				return false;
+				return -ENOMEM;
 
 			p2m_mid_mfn_init(mid_mfn, p2m_missing);
 
@@ -581,7 +594,7 @@ static bool alloc_p2m(unsigned long pfn)
 
 		p2m = alloc_p2m_page();
 		if (!p2m)
-			return false;
+			return -ENOMEM;
 
 		if (p2m_pfn == PFN_DOWN(__pa(p2m_missing)))
 			p2m_init(p2m);
@@ -608,8 +621,15 @@ static bool alloc_p2m(unsigned long pfn)
 			free_p2m_page(p2m);
 	}
 
-	return true;
+	/* Expanded the p2m? */
+	if (pfn > xen_p2m_last_pfn) {
+		xen_p2m_last_pfn = pfn;
+		HYPERVISOR_shared_info->arch.max_pfn = xen_p2m_last_pfn;
+	}
+
+	return 0;
 }
+EXPORT_SYMBOL(xen_alloc_p2m_entry);
 
 unsigned long __init set_phys_range_identity(unsigned long pfn_s,
 				      unsigned long pfn_e)
@@ -618,9 +638,6 @@ unsigned long __init set_phys_range_identity(unsigned long pfn_s,
 
 	if (unlikely(pfn_s >= xen_p2m_size))
 		return 0;
-
-	if (unlikely(xen_feature(XENFEAT_auto_translated_physmap)))
-		return pfn_e - pfn_s;
 
 	if (pfn_s > pfn_e)
 		return 0;
@@ -639,10 +656,6 @@ bool __set_phys_to_machine(unsigned long pfn, unsigned long mfn)
 	pte_t *ptep;
 	unsigned int level;
 
-	/* don't track P2M changes in autotranslate guests */
-	if (unlikely(xen_feature(XENFEAT_auto_translated_physmap)))
-		return true;
-
 	if (unlikely(pfn >= xen_p2m_size)) {
 		BUG_ON(mfn != INVALID_P2M_ENTRY);
 		return true;
@@ -650,8 +663,7 @@ bool __set_phys_to_machine(unsigned long pfn, unsigned long mfn)
 
 	/*
 	 * The interface requires atomic updates on p2m elements.
-	 * xen_safe_write_ulong() is using __put_user which does an atomic
-	 * store via asm().
+	 * xen_safe_write_ulong() is using an atomic store via asm().
 	 */
 	if (likely(!xen_safe_write_ulong(xen_p2m_addr + pfn, mfn)))
 		return true;
@@ -671,7 +683,10 @@ bool __set_phys_to_machine(unsigned long pfn, unsigned long mfn)
 bool set_phys_to_machine(unsigned long pfn, unsigned long mfn)
 {
 	if (unlikely(!__set_phys_to_machine(pfn, mfn))) {
-		if (!alloc_p2m(pfn))
+		int ret;
+
+		ret = xen_alloc_p2m_entry(pfn);
+		if (ret < 0)
 			return false;
 
 		return __set_phys_to_machine(pfn, mfn);
@@ -801,9 +816,6 @@ static struct dentry *d_mmu_debug;
 static int __init xen_p2m_debugfs(void)
 {
 	struct dentry *d_xen = xen_init_debugfs();
-
-	if (d_xen == NULL)
-		return -ENOMEM;
 
 	d_mmu_debug = debugfs_create_dir("mmu", d_xen);
 

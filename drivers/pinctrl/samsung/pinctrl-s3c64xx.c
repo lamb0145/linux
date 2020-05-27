@@ -1,21 +1,16 @@
-/*
- * S3C64xx specific support for pinctrl-samsung driver.
- *
- * Copyright (c) 2013 Tomasz Figa <tomasz.figa@gmail.com>
- *
- * Based on pinctrl-exynos.c, please see the file for original copyrights.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This file contains the Samsung S3C64xx specific information required by the
- * the Samsung pinctrl/gpiolib driver. It also includes the implementation of
- * external gpio and wakeup interrupt support.
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// S3C64xx specific support for pinctrl-samsung driver.
+//
+// Copyright (c) 2013 Tomasz Figa <tomasz.figa@gmail.com>
+//
+// Based on pinctrl-exynos.c, please see the file for original copyrights.
+//
+// This file contains the Samsung S3C64xx specific information required by the
+// the Samsung pinctrl/gpiolib driver. It also includes the implementation of
+// external gpio and wakeup interrupt support.
 
-#include <linux/module.h>
+#include <linux/init.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/irqdomain.h>
@@ -407,7 +402,7 @@ static const struct irq_domain_ops s3c64xx_gpio_irqd_ops = {
 	.xlate	= irq_domain_xlate_twocell,
 };
 
-static void s3c64xx_eint_gpio_irq(unsigned int irq, struct irq_desc *desc)
+static void s3c64xx_eint_gpio_irq(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	struct s3c64xx_eint_gpio_data *data = irq_desc_get_handler_data(desc);
@@ -488,12 +483,10 @@ static int s3c64xx_eint_gpio_init(struct samsung_pinctrl_drv_data *d)
 		++nr_domains;
 	}
 
-	data = devm_kzalloc(dev, sizeof(*data)
-			+ nr_domains * sizeof(*data->domains), GFP_KERNEL);
-	if (!data) {
-		dev_err(dev, "failed to allocate handler data\n");
+	data = devm_kzalloc(dev, struct_size(data, domains, nr_domains),
+			    GFP_KERNEL);
+	if (!data)
 		return -ENOMEM;
-	}
 	data->drvdata = d;
 
 	bank = d->pin_banks;
@@ -631,22 +624,22 @@ static inline void s3c64xx_irq_demux_eint(struct irq_desc *desc, u32 range)
 	chained_irq_exit(chip, desc);
 }
 
-static void s3c64xx_demux_eint0_3(unsigned int irq, struct irq_desc *desc)
+static void s3c64xx_demux_eint0_3(struct irq_desc *desc)
 {
 	s3c64xx_irq_demux_eint(desc, 0xf);
 }
 
-static void s3c64xx_demux_eint4_11(unsigned int irq, struct irq_desc *desc)
+static void s3c64xx_demux_eint4_11(struct irq_desc *desc)
 {
 	s3c64xx_irq_demux_eint(desc, 0xff0);
 }
 
-static void s3c64xx_demux_eint12_19(unsigned int irq, struct irq_desc *desc)
+static void s3c64xx_demux_eint12_19(struct irq_desc *desc)
 {
 	s3c64xx_irq_demux_eint(desc, 0xff000);
 }
 
-static void s3c64xx_demux_eint20_27(unsigned int irq, struct irq_desc *desc)
+static void s3c64xx_demux_eint20_27(struct irq_desc *desc)
 {
 	s3c64xx_irq_demux_eint(desc, 0xff00000);
 }
@@ -712,7 +705,7 @@ static int s3c64xx_eint_eint0_init(struct samsung_pinctrl_drv_data *d)
 
 	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data) {
-		dev_err(dev, "could not allocate memory for wkup eint data\n");
+		of_node_put(eint0_np);
 		return -ENOMEM;
 	}
 	data->drvdata = d;
@@ -723,6 +716,7 @@ static int s3c64xx_eint_eint0_init(struct samsung_pinctrl_drv_data *d)
 		irq = irq_of_parse_and_map(eint0_np, i);
 		if (!irq) {
 			dev_err(dev, "failed to get wakeup EINT IRQ %d\n", i);
+			of_node_put(eint0_np);
 			return -ENXIO;
 		}
 
@@ -730,6 +724,7 @@ static int s3c64xx_eint_eint0_init(struct samsung_pinctrl_drv_data *d)
 						 s3c64xx_eint0_handlers[i],
 						 data);
 	}
+	of_node_put(eint0_np);
 
 	bank = d->pin_banks;
 	for (i = 0; i < d->nr_banks; ++i, ++bank) {
@@ -747,10 +742,8 @@ static int s3c64xx_eint_eint0_init(struct samsung_pinctrl_drv_data *d)
 
 		ddata = devm_kzalloc(dev,
 				sizeof(*ddata) + nr_eints, GFP_KERNEL);
-		if (!ddata) {
-			dev_err(dev, "failed to allocate domain data\n");
+		if (!ddata)
 			return -ENOMEM;
-		}
 		ddata->bank = bank;
 
 		bank->irq_domain = irq_domain_add_linear(bank->of_node,
@@ -800,7 +793,7 @@ static const struct samsung_pin_bank_data s3c64xx_pin_banks0[] __initconst = {
  * Samsung pinctrl driver data for S3C64xx SoC. S3C64xx SoC includes
  * one gpio/pin-mux/pinconfig controller.
  */
-const struct samsung_pin_ctrl s3c64xx_pin_ctrl[] __initconst = {
+static const struct samsung_pin_ctrl s3c64xx_pin_ctrl[] __initconst = {
 	{
 		/* pin-controller instance 1 data */
 		.pin_banks	= s3c64xx_pin_banks0,
@@ -808,4 +801,9 @@ const struct samsung_pin_ctrl s3c64xx_pin_ctrl[] __initconst = {
 		.eint_gpio_init = s3c64xx_eint_gpio_init,
 		.eint_wkup_init = s3c64xx_eint_eint0_init,
 	},
+};
+
+const struct samsung_pinctrl_of_match_data s3c64xx_of_data __initconst = {
+	.ctrl		= s3c64xx_pin_ctrl,
+	.num_ctrl	= ARRAY_SIZE(s3c64xx_pin_ctrl),
 };

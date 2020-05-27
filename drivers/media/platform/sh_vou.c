@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * SuperH Video Output Unit (VOU) driver
  *
  * Copyright (C) 2010, Guennadi Liakhovetski <g.liakhovetski@gmx.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/dma-mapping.h>
@@ -22,11 +19,12 @@
 #include <linux/videodev2.h>
 #include <linux/module.h>
 
-#include <media/sh_vou.h>
+#include <media/drv-intf/sh_vou.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mediabus.h>
+#include <media/videobuf2-v4l2.h>
 #include <media/videobuf2-dma-contig.h>
 
 /* Mirror addresses are not available for all registers */
@@ -62,11 +60,12 @@ enum sh_vou_status {
 #define VOU_MIN_IMAGE_HEIGHT	16
 
 struct sh_vou_buffer {
-	struct vb2_buffer vb;
+	struct vb2_v4l2_buffer vb;
 	struct list_head list;
 };
 
-static inline struct sh_vou_buffer *to_sh_vou_buffer(struct vb2_buffer *vb2)
+static inline struct
+sh_vou_buffer *to_sh_vou_buffer(struct vb2_v4l2_buffer *vb2)
 {
 	return container_of(vb2, struct sh_vou_buffer, vb);
 }
@@ -84,7 +83,6 @@ struct sh_vou_device {
 	v4l2_std_id std;
 	int pix_idx;
 	struct vb2_queue queue;
-	struct vb2_alloc_ctx *alloc_ctx;
 	struct sh_vou_buffer *active;
 	enum sh_vou_status status;
 	unsigned sequence;
@@ -140,7 +138,6 @@ static void sh_vou_reg_ab_set(struct sh_vou_device *vou_dev, unsigned int reg,
 
 struct sh_vou_fmt {
 	u32		pfmt;
-	char		*desc;
 	unsigned char	bpp;
 	unsigned char	bpl;
 	unsigned char	rgb;
@@ -154,7 +151,6 @@ static struct sh_vou_fmt vou_fmt[] = {
 		.pfmt	= V4L2_PIX_FMT_NV12,
 		.bpp	= 12,
 		.bpl	= 1,
-		.desc	= "YVU420 planar",
 		.yf	= 0,
 		.rgb	= 0,
 	},
@@ -162,7 +158,6 @@ static struct sh_vou_fmt vou_fmt[] = {
 		.pfmt	= V4L2_PIX_FMT_NV16,
 		.bpp	= 16,
 		.bpl	= 1,
-		.desc	= "YVYU planar",
 		.yf	= 1,
 		.rgb	= 0,
 	},
@@ -170,7 +165,6 @@ static struct sh_vou_fmt vou_fmt[] = {
 		.pfmt	= V4L2_PIX_FMT_RGB24,
 		.bpp	= 24,
 		.bpl	= 3,
-		.desc	= "RGB24",
 		.pkf	= 2,
 		.rgb	= 1,
 	},
@@ -178,7 +172,6 @@ static struct sh_vou_fmt vou_fmt[] = {
 		.pfmt	= V4L2_PIX_FMT_RGB565,
 		.bpp	= 16,
 		.bpl	= 2,
-		.desc	= "RGB565",
 		.pkf	= 3,
 		.rgb	= 1,
 	},
@@ -186,18 +179,17 @@ static struct sh_vou_fmt vou_fmt[] = {
 		.pfmt	= V4L2_PIX_FMT_RGB565X,
 		.bpp	= 16,
 		.bpl	= 2,
-		.desc	= "RGB565 byteswapped",
 		.pkf	= 3,
 		.rgb	= 1,
 	},
 };
 
 static void sh_vou_schedule_next(struct sh_vou_device *vou_dev,
-				 struct vb2_buffer *vb)
+				 struct vb2_v4l2_buffer *vbuf)
 {
 	dma_addr_t addr1, addr2;
 
-	addr1 = vb2_dma_contig_plane_dma_addr(vb, 0);
+	addr1 = vb2_dma_contig_plane_dma_addr(&vbuf->vb2_buf, 0);
 	switch (vou_dev->pix.pixelformat) {
 	case V4L2_PIX_FMT_NV12:
 	case V4L2_PIX_FMT_NV16:
@@ -228,6 +220,7 @@ static void sh_vou_stream_config(struct sh_vou_device *vou_dev)
 		break;
 	case V4L2_PIX_FMT_RGB565:
 		dataswap ^= 1;
+		/* fall through */
 	case V4L2_PIX_FMT_RGB565X:
 		row_coeff = 2;
 		break;
@@ -241,9 +234,9 @@ static void sh_vou_stream_config(struct sh_vou_device *vou_dev)
 }
 
 /* Locking: caller holds fop_lock mutex */
-static int sh_vou_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
+static int sh_vou_queue_setup(struct vb2_queue *vq,
 		       unsigned int *nbuffers, unsigned int *nplanes,
-		       unsigned int sizes[], void *alloc_ctxs[])
+		       unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct sh_vou_device *vou_dev = vb2_get_drv_priv(vq);
 	struct v4l2_pix_format *pix = &vou_dev->pix;
@@ -251,11 +244,10 @@ static int sh_vou_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fm
 
 	dev_dbg(vou_dev->v4l2_dev.dev, "%s()\n", __func__);
 
-	if (fmt && fmt->fmt.pix.sizeimage < pix->height * bytes_per_line)
-		return -EINVAL;
+	if (*nplanes)
+		return sizes[0] < pix->height * bytes_per_line ? -EINVAL : 0;
 	*nplanes = 1;
-	sizes[0] = fmt ? fmt->fmt.pix.sizeimage : pix->height * bytes_per_line;
-	alloc_ctxs[0] = vou_dev->alloc_ctx;
+	sizes[0] = pix->height * bytes_per_line;
 	return 0;
 }
 
@@ -282,8 +274,9 @@ static int sh_vou_buf_prepare(struct vb2_buffer *vb)
 /* Locking: caller holds fop_lock mutex and vq->irqlock spinlock */
 static void sh_vou_buf_queue(struct vb2_buffer *vb)
 {
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct sh_vou_device *vou_dev = vb2_get_drv_priv(vb->vb2_queue);
-	struct sh_vou_buffer *shbuf = to_sh_vou_buffer(vb);
+	struct sh_vou_buffer *shbuf = to_sh_vou_buffer(vbuf);
 	unsigned long flags;
 
 	spin_lock_irqsave(&vou_dev->lock, flags);
@@ -302,7 +295,8 @@ static int sh_vou_start_streaming(struct vb2_queue *vq, unsigned int count)
 					 video, s_stream, 1);
 	if (ret < 0 && ret != -ENOIOCTLCMD) {
 		list_for_each_entry_safe(buf, node, &vou_dev->buf_list, list) {
-			vb2_buffer_done(&buf->vb, VB2_BUF_STATE_QUEUED);
+			vb2_buffer_done(&buf->vb.vb2_buf,
+					VB2_BUF_STATE_QUEUED);
 			list_del(&buf->list);
 		}
 		vou_dev->active = NULL;
@@ -353,14 +347,14 @@ static void sh_vou_stop_streaming(struct vb2_queue *vq)
 	msleep(50);
 	spin_lock_irqsave(&vou_dev->lock, flags);
 	list_for_each_entry_safe(buf, node, &vou_dev->buf_list, list) {
-		vb2_buffer_done(&buf->vb, VB2_BUF_STATE_ERROR);
+		vb2_buffer_done(&buf->vb.vb2_buf, VB2_BUF_STATE_ERROR);
 		list_del(&buf->list);
 	}
 	vou_dev->active = NULL;
 	spin_unlock_irqrestore(&vou_dev->lock, flags);
 }
 
-static struct vb2_ops sh_vou_qops = {
+static const struct vb2_ops sh_vou_qops = {
 	.queue_setup		= sh_vou_queue_setup,
 	.buf_prepare		= sh_vou_buf_prepare,
 	.buf_queue		= sh_vou_buf_queue,
@@ -378,12 +372,9 @@ static int sh_vou_querycap(struct file *file, void  *priv,
 
 	dev_dbg(vou_dev->v4l2_dev.dev, "%s()\n", __func__);
 
-	strlcpy(cap->card, "SuperH VOU", sizeof(cap->card));
-	strlcpy(cap->driver, "sh-vou", sizeof(cap->driver));
-	strlcpy(cap->bus_info, "platform:sh-vou", sizeof(cap->bus_info));
-	cap->device_caps = V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_READWRITE |
-			   V4L2_CAP_STREAMING;
-	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
+	strscpy(cap->card, "SuperH VOU", sizeof(cap->card));
+	strscpy(cap->driver, "sh-vou", sizeof(cap->driver));
+	strscpy(cap->bus_info, "platform:sh-vou", sizeof(cap->bus_info));
 	return 0;
 }
 
@@ -398,9 +389,6 @@ static int sh_vou_enum_fmt_vid_out(struct file *file, void  *priv,
 
 	dev_dbg(vou_dev->v4l2_dev.dev, "%s()\n", __func__);
 
-	fmt->type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-	strlcpy(fmt->description, vou_fmt[fmt->index].desc,
-		sizeof(fmt->description));
 	fmt->pixelformat = vou_fmt[fmt->index].pfmt;
 
 	return 0;
@@ -494,7 +482,8 @@ static void sh_vou_configure_geometry(struct sh_vou_device *vou_dev,
 	if (h_idx)
 		vouvcr |= (1 << 14) | vou_scale_v_fld[h_idx - 1];
 
-	dev_dbg(vou_dev->v4l2_dev.dev, "%s: scaling 0x%x\n", fmt->desc, vouvcr);
+	dev_dbg(vou_dev->v4l2_dev.dev, "0x%08x: scaling 0x%x\n",
+		fmt->pfmt, vouvcr);
 
 	/* To produce a colour bar for testing set bit 23 of VOUVCR */
 	sh_vou_reg_ab_write(vou_dev, VOUVCR, vouvcr);
@@ -790,7 +779,7 @@ static int sh_vou_enum_output(struct file *file, void *fh,
 
 	if (a->index)
 		return -EINVAL;
-	strlcpy(a->name, "Video Out", sizeof(a->name));
+	strscpy(a->name, "Video Out", sizeof(a->name));
 	a->type = V4L2_OUTPUT_TYPE_ANALOG;
 	a->std = vou_dev->vdev.tvnorms;
 	return 0;
@@ -811,8 +800,9 @@ static u32 sh_vou_ntsc_mode(enum sh_vou_bus_fmt bus_fmt)
 {
 	switch (bus_fmt) {
 	default:
-		pr_warning("%s(): Invalid bus-format code %d, using default 8-bit\n",
-			   __func__, bus_fmt);
+		pr_warn("%s(): Invalid bus-format code %d, using default 8-bit\n",
+			__func__, bus_fmt);
+		/* fall through */
 	case SH_VOU_BUS_8BIT:
 		return 1;
 	case SH_VOU_BUS_16BIT:
@@ -935,7 +925,10 @@ static int sh_vou_s_selection(struct file *file, void *fh,
 {
 	struct v4l2_rect *rect = &sel->r;
 	struct sh_vou_device *vou_dev = video_drvdata(file);
-	struct v4l2_crop sd_crop = {.type = V4L2_BUF_TYPE_VIDEO_OUTPUT};
+	struct v4l2_subdev_selection sd_sel = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.target = V4L2_SEL_TGT_COMPOSE,
+	};
 	struct v4l2_pix_format *pix = &vou_dev->pix;
 	struct sh_vou_geometry geo;
 	struct v4l2_subdev_format format = {
@@ -976,14 +969,14 @@ static int sh_vou_s_selection(struct file *file, void *fh,
 	geo.in_height = pix->height;
 
 	/* Configure the encoder one-to-one, position at 0, ignore errors */
-	sd_crop.c.width = geo.output.width;
-	sd_crop.c.height = geo.output.height;
+	sd_sel.r.width = geo.output.width;
+	sd_sel.r.height = geo.output.height;
 	/*
-	 * We first issue a S_CROP, so that the subsequent S_FMT delivers the
+	 * We first issue a S_SELECTION, so that the subsequent S_FMT delivers the
 	 * final encoder configuration.
 	 */
-	v4l2_device_call_until_err(&vou_dev->v4l2_dev, 0, video,
-				   s_crop, &sd_crop);
+	v4l2_device_call_until_err(&vou_dev->v4l2_dev, 0, pad,
+				   set_selection, NULL, &sd_sel);
 	format.format.width = geo.output.width;
 	format.format.height = geo.output.height;
 	ret = v4l2_device_call_until_err(&vou_dev->v4l2_dev, 0, pad,
@@ -1003,7 +996,7 @@ static int sh_vou_s_selection(struct file *file, void *fh,
 
 	/*
 	 * No down-scaling. According to the API, current call has precedence:
-	 * http://v4l2spec.bytesex.org/spec/x1904.htm#AEN1954 paragraph two.
+	 * https://linuxtv.org/downloads/v4l-dvb-apis/uapi/v4l/crop.html#cropping-structures
 	 */
 	vou_adjust_input(&geo, vou_dev->std);
 
@@ -1066,10 +1059,10 @@ static irqreturn_t sh_vou_isr(int irq, void *dev_id)
 
 	list_del(&vb->list);
 
-	v4l2_get_timestamp(&vb->vb.v4l2_buf.timestamp);
-	vb->vb.v4l2_buf.sequence = vou_dev->sequence++;
-	vb->vb.v4l2_buf.field = V4L2_FIELD_INTERLACED;
-	vb2_buffer_done(&vb->vb, VB2_BUF_STATE_DONE);
+	vb->vb.vb2_buf.timestamp = ktime_get_ns();
+	vb->vb.sequence = vou_dev->sequence++;
+	vb->vb.field = V4L2_FIELD_INTERLACED;
+	vb2_buffer_done(&vb->vb.vb2_buf, VB2_BUF_STATE_DONE);
 
 	vou_dev->active = list_entry(vou_dev->buf_list.next,
 				     struct sh_vou_buffer, list);
@@ -1174,7 +1167,7 @@ static int sh_vou_release(struct file *file)
 
 /* sh_vou display ioctl operations */
 static const struct v4l2_ioctl_ops sh_vou_ioctl_ops = {
-	.vidioc_querycap        	= sh_vou_querycap,
+	.vidioc_querycap		= sh_vou_querycap,
 	.vidioc_enum_fmt_vid_out	= sh_vou_enum_fmt_vid_out,
 	.vidioc_g_fmt_vid_out		= sh_vou_g_fmt_vid_out,
 	.vidioc_s_fmt_vid_out		= sh_vou_s_fmt_vid_out,
@@ -1214,6 +1207,8 @@ static const struct video_device sh_vou_video_template = {
 	.ioctl_ops	= &sh_vou_ioctl_ops,
 	.tvnorms	= V4L2_STD_525_60, /* PAL only supported in 8-bit non-bt656 mode */
 	.vfl_dir	= VFL_DIR_TX,
+	.device_caps	= V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_READWRITE |
+			  V4L2_CAP_STREAMING,
 };
 
 static int sh_vou_probe(struct platform_device *pdev)
@@ -1300,16 +1295,11 @@ static int sh_vou_probe(struct platform_device *pdev)
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	q->min_buffers_needed = 2;
 	q->lock = &vou_dev->fop_lock;
+	q->dev = &pdev->dev;
 	ret = vb2_queue_init(q);
 	if (ret)
-		goto einitctx;
+		goto ei2cgadap;
 
-	vou_dev->alloc_ctx = vb2_dma_contig_init_ctx(&pdev->dev);
-	if (IS_ERR(vou_dev->alloc_ctx)) {
-		dev_err(&pdev->dev, "Can't allocate buffer context");
-		ret = PTR_ERR(vou_dev->alloc_ctx);
-		goto einitctx;
-	}
 	vdev->queue = q;
 	INIT_LIST_HEAD(&vou_dev->buf_list);
 
@@ -1333,7 +1323,7 @@ static int sh_vou_probe(struct platform_device *pdev)
 		goto ei2cnd;
 	}
 
-	ret = video_register_device(vdev, VFL_TYPE_GRABBER, -1);
+	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0)
 		goto evregdev;
 
@@ -1344,8 +1334,6 @@ ei2cnd:
 ereset:
 	i2c_put_adapter(i2c_adap);
 ei2cgadap:
-	vb2_dma_contig_cleanup_ctx(vou_dev->alloc_ctx);
-einitctx:
 	pm_runtime_disable(&pdev->dev);
 	v4l2_device_unregister(&vou_dev->v4l2_dev);
 	return ret;
@@ -1363,7 +1351,6 @@ static int sh_vou_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 	video_unregister_device(&vou_dev->vdev);
 	i2c_put_adapter(client->adapter);
-	vb2_dma_contig_cleanup_ctx(vou_dev->alloc_ctx);
 	v4l2_device_unregister(&vou_dev->v4l2_dev);
 	return 0;
 }

@@ -1,22 +1,9 @@
-/******************************************************************************
+// SPDX-License-Identifier: GPL-2.0
+/*
  * Copyright(c) 2008 - 2010 Realtek Corporation. All rights reserved.
  *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
- *
- * The full GNU General Public License is included in this distribution in the
- * file called LICENSE.
- *
- * Contact Information:
- * wlanfae <wlanfae@realtek.com>
-******************************************************************************/
-
+ * Contact Information: wlanfae <wlanfae@realtek.com>
+ */
 #include "rtl_core.h"
 #include "r8192E_phyreg.h"
 #include "r8192E_phy.h"
@@ -36,7 +23,7 @@ void rtl92e_set_bandwidth(struct net_device *dev,
 
 	for (eRFPath = 0; eRFPath < priv->NumTotalRFPath; eRFPath++) {
 		if (!rtl92e_is_legal_rf_path(dev, eRFPath))
-				continue;
+			continue;
 
 		switch (Bandwidth) {
 		case HT_CHANNEL_WIDTH_20:
@@ -82,7 +69,7 @@ bool rtl92e_config_rf(struct net_device *dev)
 	for (eRFPath = (enum rf90_radio_path)RF90_PATH_A;
 	     eRFPath < priv->NumTotalRFPath; eRFPath++) {
 		if (!rtl92e_is_legal_rf_path(dev, eRFPath))
-				continue;
+			continue;
 
 		pPhyReg = &priv->PHYRegDef[eRFPath];
 

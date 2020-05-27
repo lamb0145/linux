@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2013 Samsung Electronics Co., Ltd.
  * Author: Andrzej Hajda <a.hajda@samsung.com>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  * Device Tree binding constants for Exynos5250 clock controller.
-*/
+ */
 
 #ifndef _DT_BINDINGS_CLOCK_EXYNOS_5250_H
 #define _DT_BINDINGS_CLOCK_EXYNOS_5250_H
@@ -173,8 +170,10 @@
 /* mux clocks */
 #define CLK_MOUT_HDMI		1024
 #define CLK_MOUT_GPLL		1025
+#define CLK_MOUT_ACLK200_DISP1_SUB	1026
+#define CLK_MOUT_ACLK300_DISP1_SUB	1027
 
 /* must be greater than maximal clock id */
-#define CLK_NR_CLKS		1026
+#define CLK_NR_CLKS		1028
 
 #endif /* _DT_BINDINGS_CLOCK_EXYNOS_5250_H */

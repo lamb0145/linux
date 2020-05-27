@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mm/highmem.c -- ARM highmem support
  *
  * Author:	Nicolas Pitre
  * Created:	september 8, 2008
  * Copyright:	Marvell Semiconductors Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -146,14 +143,4 @@ void *kmap_atomic_pfn(unsigned long pfn)
 	set_fixmap_pte(idx, pfn_pte(pfn, kmap_prot));
 
 	return (void *)vaddr;
-}
-
-struct page *kmap_atomic_to_page(const void *ptr)
-{
-	unsigned long vaddr = (unsigned long)ptr;
-
-	if (vaddr < FIXADDR_START)
-		return virt_to_page(ptr);
-
-	return pte_page(get_fixmap_pte(vaddr));
 }
